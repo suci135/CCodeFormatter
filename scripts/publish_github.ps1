@@ -7,12 +7,17 @@
 
 .EXAMPLE
     .\scripts\publish_github.ps1 -Message "Release 0.2.0" -Yes
+
+.EXAMPLE
+    .\scripts\publish_github.ps1 -Message "Initial upload" -RemoteUrl "https://github.com/user/repository.git"
 #>
 [CmdletBinding()]
 param(
     [string]$Message,
 
     [string]$Remote = "origin",
+
+    [string]$RemoteUrl = "",
 
     [string]$Branch = "",
 
@@ -42,12 +47,34 @@ if ([string]::IsNullOrWhiteSpace($Message)) {
     throw "A commit message is required; no files were staged or uploaded."
 }
 
-Invoke-Git rev-parse --is-inside-work-tree | Out-Null
+$insideRepository = & git rev-parse --is-inside-work-tree 2>$null
+if ($LASTEXITCODE -ne 0 -or $insideRepository.Trim() -ne "true") {
+    Write-Host "Initializing a new Git repository..." -ForegroundColor Cyan
+    Invoke-Git init
+}
+
 if (-not $Branch) {
     $Branch = (& git branch --show-current).Trim()
 }
 if (-not $Branch) {
-    throw "No current branch is checked out."
+    $Branch = "main"
+    Invoke-Git branch -M $Branch
+}
+
+$remoteOutput = & git remote get-url $Remote 2>$null
+$existingRemoteUrl = if ($LASTEXITCODE -eq 0) { "$remoteOutput".Trim() } else { "" }
+if (-not $existingRemoteUrl) {
+    if ([string]::IsNullOrWhiteSpace($RemoteUrl)) {
+        $RemoteUrl = Read-Host "GitHub repository URL"
+    }
+    if ([string]::IsNullOrWhiteSpace($RemoteUrl)) {
+        throw "A GitHub repository URL is required; no files were staged or uploaded."
+    }
+    Invoke-Git remote add $Remote $RemoteUrl
+    $existingRemoteUrl = $RemoteUrl
+}
+elseif (-not [string]::IsNullOrWhiteSpace($RemoteUrl) -and $RemoteUrl -ne $existingRemoteUrl) {
+    throw "Remote '$Remote' already points to '$existingRemoteUrl'. Change it with git remote set-url only after verifying the target repository."
 }
 
 Invoke-Git diff --check
@@ -81,5 +108,5 @@ if (-not $Yes) {
 }
 
 Invoke-Git commit -m $Message
-Invoke-Git push $Remote "HEAD:$Branch"
-Write-Host "Uploaded successfully: $Remote/$Branch" -ForegroundColor Green
+Invoke-Git push --set-upstream $Remote "HEAD:$Branch"
+Write-Host "Uploaded successfully: $existingRemoteUrl ($Branch)" -ForegroundColor Green
