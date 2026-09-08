@@ -1,0 +1,47 @@
+# Python environments and bytecode
+__pycache__/
+*.py[cod]
+*.pyd
+.Python
+.venv/
+venv/
+env/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Test, type-checking, and coverage output
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# IDE and operating-system files
+.idea/
+.vscode/
+*.code-workspace
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# PyInstaller and packaging output
+build/
+dist/
+*.spec
+
+# Application-local data and generated files
+profiles/custom/
+*.formatted.c
+*.formatted.h
+*.ccf-backup
+CCodeFormatter-startup.log
+*.log

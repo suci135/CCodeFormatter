@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ccodeformatter"
+version = "0.2.0"
+description = "Template-driven formatter for C source files"
+requires-python = ">=3.10"
+dependencies = ["PyQt6>=6.10.0", "pyglass-qt>=0.3.0"]
+
+[project.scripts]
+ccf = "ccf.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
