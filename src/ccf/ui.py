@@ -140,6 +140,8 @@ ASSET_DIR = _RESOURCE_ROOT / "assets" / "icons"
 APP_ICON_PATH = ASSET_DIR / "app-icon.ico"
 DROPDOWN_ICON_PATH = ASSET_DIR / "tabler-chevron-down.svg"
 EFFECT_MODES = ("none", "liquid", "frosted")
+GLASS_FRAME_INTERVAL_MS = 200
+MAX_DIFF_HIGHLIGHT_BLOCKS = 750
 GENERATED_DIR_NAMES = frozenset({
     ".git",
     ".hg",
@@ -602,6 +604,7 @@ class GlassBar(QFrame):
         self._backdrop = None
         self._refracted = None
         self._render_in_progress = False
+        self._refresh_queued = False
         self._render_request_id = 0
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
@@ -610,14 +613,22 @@ class GlassBar(QFrame):
             self._screen_backdrop.changed.connect(self._on_screen_backdrop_changed)
 
     def _on_screen_backdrop_changed(self) -> None:
-        # ScreenBackdrop already coalesces unchanged frames. Rebuild the
-        # small chrome surface only when a new desktop frame arrives.
+        # The desktop can update faster than NumPy can render both chrome
+        # bars. Keep at most one deferred refresh instead of invalidating the
+        # active frame and continuously rebuilding stale pixels.
         owner = QWidget.window(self)
         if (
             not getattr(owner, "_glass_capture_suspended", False)
             and self._effect_mode in {"liquid", "frosted"}
         ):
-            self._refresh_timer.start(0)
+            self._queue_refraction()
+
+    def _queue_refraction(self, delay: int = 0, restart: bool = False) -> None:
+        if self._render_in_progress:
+            self._refresh_queued = True
+            return
+        if restart or not self._refresh_timer.isActive():
+            self._refresh_timer.start(delay)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -627,7 +638,7 @@ class GlassBar(QFrame):
             not getattr(QWidget.window(self), "_glass_capture_suspended", False)
             and self._effect_mode in {"liquid", "frosted"}
         ):
-            self._refresh_timer.start(0)
+            self._queue_refraction()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -637,7 +648,7 @@ class GlassBar(QFrame):
             not getattr(QWidget.window(self), "_glass_capture_suspended", False)
             and self._effect_mode in {"liquid", "frosted"}
         ):
-            self._refresh_timer.start(140)
+            self._queue_refraction(140, restart=True)
 
     def _refresh_refraction(self) -> None:
         if (
@@ -645,14 +656,16 @@ class GlassBar(QFrame):
             or getattr(QWidget.window(self), "_glass_capture_suspended", False)
         ):
             return
-        self._render_request_id += 1
-        request_id = self._render_request_id
         if GlassMaterial is None or GlassRenderer is None:
             return
         if self.width() < 2 or self.height() < 2:
             return
         if self._render_in_progress:
+            self._refresh_queued = True
             return
+        self._refresh_queued = False
+        self._render_request_id += 1
+        request_id = self._render_request_id
         try:
             backdrop = self._screen_backdrop
             screen_pixels = backdrop.array() if backdrop is not None else None
@@ -687,31 +700,25 @@ class GlassBar(QFrame):
     def _on_render_completed(self, image, request_id: int, dpr: float) -> None:
         self._render_in_progress = False
         if request_id != self._render_request_id or self._effect_mode not in {"liquid", "frosted"}:
-            if (
-                self._effect_mode in {"liquid", "frosted"}
-                and not getattr(QWidget.window(self), "_glass_capture_suspended", False)
-            ):
-                self._refresh_timer.start(0)
             return
         pixmap = QPixmap.fromImage(image)
         pixmap.setDevicePixelRatio(dpr)
         self._refracted = pixmap
         self.update()
+        if self._refresh_queued:
+            self._queue_refraction()
 
     def _on_render_failed(self, request_id: int) -> None:
         self._render_in_progress = False
         if request_id == self._render_request_id:
             self._refracted = None
-        if (
-            self._effect_mode in {"liquid", "frosted"}
-            and request_id != self._render_request_id
-            and not getattr(QWidget.window(self), "_glass_capture_suspended", False)
-        ):
-            self._refresh_timer.start(0)
+        if self._refresh_queued:
+            self._queue_refraction()
 
     def suspend_rendering(self) -> None:
         """Cancel pending chrome renders while the top-level window is resized."""
         self._render_request_id += 1
+        self._refresh_queued = False
         self._refresh_timer.stop()
         # The cached pixmap has the previous width/height. Remove it now so
         # the paint fallback fills the entire new bar instead of leaving a
@@ -726,7 +733,7 @@ class GlassBar(QFrame):
             and self._effect_mode in {"liquid", "frosted"}
             and not getattr(QWidget.window(self), "_glass_capture_suspended", False)
         ):
-            self._refresh_timer.start(0)
+            self._queue_refraction()
 
     def set_effect_mode(self, mode: str) -> None:
         mode = mode if mode in EFFECT_MODES else "liquid"
@@ -734,6 +741,7 @@ class GlassBar(QFrame):
             return
         self._effect_mode = mode
         self._render_request_id += 1
+        self._refresh_queued = False
         self._refracted = None
         self._refresh_timer.stop()
         if (
@@ -741,7 +749,7 @@ class GlassBar(QFrame):
             and self.isVisible()
             and not getattr(QWidget.window(self), "_glass_capture_suspended", False)
         ):
-            self._refresh_timer.start(0)
+            self._queue_refraction()
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -1984,6 +1992,7 @@ class FormatterWindow(QMainWindow):
         self._syncing_horizontal_scroll = False
         self._diff_blocks: list[tuple[str, int, int, int, int]] = []
         self._current_diff_index = -1
+        self._compact_diff_highlighting = False
         saved_dark = self.settings.value("ui/dark_mode", False)
         self.dark_mode = str(saved_dark).strip().casefold() not in {"", "0", "false", "no", "off"}
         saved_effect = str(self.settings.value("ui/effect_mode", "liquid")).strip().casefold()
@@ -2020,7 +2029,7 @@ class FormatterWindow(QMainWindow):
                 self,
                 # Keep the material visibly live while the adaptive backdrop
                 # still backs off when the desktop is unchanged.
-                interval_ms=120,
+                interval_ms=GLASS_FRAME_INTERVAL_MS,
                 capture_margin=40,
             )
         self.font_family = preferred_font_family()
@@ -2060,6 +2069,7 @@ class FormatterWindow(QMainWindow):
             ("Ctrl+=", lambda: self._zoom_code_views(1)),
             ("Ctrl+-", lambda: self._zoom_code_views(-1)),
             ("Ctrl+0", self._reset_code_zoom),
+            ("Ctrl+Shift+0", self._reset_workbench_layout),
             ("Ctrl+Shift+P", self.show_command_palette),
             ("F1", self.show_usage_guide),
         ):
@@ -2097,6 +2107,12 @@ class FormatterWindow(QMainWindow):
         self._update_zoom_label()
         self.status_label.setText("代码字体已恢复为 10 pt")
 
+    def _reset_workbench_layout(self) -> None:
+        """Restore the three-pane proportions after a display-scale change."""
+        self.workbench_splitter.setSizes([210, 650, 270])
+        self.settings.remove("ui/workbench_splitter")
+        self.status_label.setText("工作区布局已恢复")
+
     def show_usage_guide(self) -> None:
         dialog = UsageGuideDialog(self)
         dialog.setStyleSheet(self.styleSheet())
@@ -2119,6 +2135,7 @@ class FormatterWindow(QMainWindow):
             ("放大代码字体", "Ctrl+=", lambda: self._zoom_code_views(1)),
             ("缩小代码字体", "Ctrl+-", lambda: self._zoom_code_views(-1)),
             ("恢复代码字体", "Ctrl+0", self._reset_code_zoom),
+            ("恢复工作区布局", "Ctrl+Shift+0", self._reset_workbench_layout),
             ("切换浅色 / 深色主题", "", self.toggle_theme),
             ("刷新玻璃背景", "Ctrl+Shift+R", self._refresh_screen_glass),
             ("打开使用指南", "F1", self.show_usage_guide),
@@ -2613,6 +2630,7 @@ class FormatterWindow(QMainWindow):
         # The scroll-bar signals were intentionally ignored while both panes
         # were centered. Refresh the overview after the guarded jump.
         self._update_diff_overview_viewport(self.before_editor)
+        self._apply_compact_diff_highlight()
         self._update_diff_navigation()
 
     def _update_diff_navigation(self) -> None:
@@ -2704,13 +2722,18 @@ class FormatterWindow(QMainWindow):
             self.ignore_whitespace_check.isChecked(),
         )
         self._diff_blocks = [opcode for opcode in opcodes if opcode[0] != "equal"]
+        self._compact_diff_highlighting = len(self._diff_blocks) > MAX_DIFF_HIGHLIGHT_BLOCKS
         changed_line_total = sum(
             (before_end - before_start) + (after_end - after_start)
             for tag, before_start, before_end, after_start, after_end in self._diff_blocks
         )
         # Keep the useful line-level overview for large files, but avoid the
         # quadratic-looking per-line matcher when it would freeze the window.
-        precise_char_diff = len(before_text) + len(after_text) <= 600_000 and changed_line_total <= 6_000
+        precise_char_diff = (
+            not self._compact_diff_highlighting
+            and len(before_text) + len(after_text) <= 600_000
+            and changed_line_total <= 6_000
+        )
         if self._diff_blocks:
             self._current_diff_index = min(max(self._current_diff_index, 0), len(self._diff_blocks) - 1)
         else:
@@ -2721,14 +2744,15 @@ class FormatterWindow(QMainWindow):
                 continue
             changed_before += before_end - before_start
             changed_after += after_end - after_start
-            before_selection = self._line_range_selection(
-                self.before_editor, before_start, before_end, before_line_color
-            )
-            if before_selection:
-                before_selections.append(before_selection)
-            after_selection = self._line_range_selection(self.after_editor, after_start, after_end, after_line_color)
-            if after_selection:
-                after_selections.append(after_selection)
+            if not self._compact_diff_highlighting:
+                before_selection = self._line_range_selection(
+                    self.before_editor, before_start, before_end, before_line_color
+                )
+                if before_selection:
+                    before_selections.append(before_selection)
+                after_selection = self._line_range_selection(self.after_editor, after_start, after_end, after_line_color)
+                if after_selection:
+                    after_selections.append(after_selection)
 
             if tag == "replace" and precise_char_diff:
                 for offset in range(min(before_end - before_start, after_end - after_start)):
@@ -2752,16 +2776,40 @@ class FormatterWindow(QMainWindow):
                         if right_selection:
                             after_selections.append(right_selection)
 
-        self.before_editor.setExtraSelections(before_selections)
-        self.after_editor.setExtraSelections(after_selections)
+        if self._compact_diff_highlighting:
+            self._apply_compact_diff_highlight(before_line_color, after_line_color)
+        else:
+            self.before_editor.setExtraSelections(before_selections)
+            self.after_editor.setExtraSelections(after_selections)
         if not changed_before and not changed_after:
             self.compare_summary_label.setText(
                 "忽略空白后无差异" if self.ignore_whitespace_check.isChecked() else "两边完全一致"
             )
+            self.compare_summary_label.setToolTip("")
         else:
-            self.compare_summary_label.setText(f"{changed_before} 行变更 → {changed_after} 行结果")
+            detail = " · 轻量模式" if self._compact_diff_highlighting else ""
+            self.compare_summary_label.setText(f"{changed_before} 行变更 → {changed_after} 行结果{detail}")
+            self.compare_summary_label.setToolTip(
+                "差异块较多：缩略图和导航保留全部差异，仅高亮当前差异块以保持流畅。"
+                if self._compact_diff_highlighting else ""
+            )
         self._update_diff_navigation()
         self._update_diff_overview_viewport(self.before_editor)
+
+    def _apply_compact_diff_highlight(self, before_color: QColor | None = None, after_color: QColor | None = None) -> None:
+        """Highlight only the active block when thousands of blocks differ."""
+        if not self._compact_diff_highlighting or not self._diff_blocks or self._current_diff_index < 0:
+            self.before_editor.setExtraSelections([])
+            self.after_editor.setExtraSelections([])
+            return
+        dark = self.dark_mode
+        before_color = before_color or QColor("#6A3438" if dark else "#FFDAD6")
+        after_color = after_color or QColor("#356B45" if dark else "#D2F3D9")
+        _, before_start, before_end, after_start, after_end = self._diff_blocks[self._current_diff_index]
+        before = self._line_range_selection(self.before_editor, before_start, before_end, before_color)
+        after = self._line_range_selection(self.after_editor, after_start, after_end, after_color)
+        self.before_editor.setExtraSelections([before] if before else [])
+        self.after_editor.setExtraSelections([after] if after else [])
 
     def _create_code_view(self, title: str) -> tuple[QFrame, QPlainTextEdit]:
         card = QFrame()
@@ -4675,7 +4723,8 @@ class FormatterWindow(QMainWindow):
              #commandList::item {{ padding: 9px 10px; border-radius: 7px; }}
              #commandList::item:hover {{ background: {palette.button_hover}; }}
              #commandList::item:selected {{ background: {palette.selection}; color: {palette.accent}; font-weight: 600; }}
-             QSplitter::handle {{ background: transparent; width: 8px; }}
+            QSplitter::handle {{ background: transparent; width: 8px; }}
+            QSplitter::handle:hover {{ background: {_rgba(palette.accent, 28)}; border-radius: 3px; }}
         """)
         if hasattr(self, "canvas"):
             self.canvas.set_dark(self.dark_mode)
