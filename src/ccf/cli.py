@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import os
 import sys
+import traceback
 from pathlib import Path
 
 from .files import format_file
 from .service import inspect_file
 
 
-def _write_gui_startup_diagnostic(error: ImportError) -> None:
-    """Leave actionable details beside the exe when Qt cannot load."""
+def _write_gui_startup_diagnostic(error: Exception) -> None:
+    """Leave actionable details beside the EXE when the GUI cannot start."""
     bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
     candidates = [
         bundle_root / "PyQt6" / "Qt6" / "bin",
@@ -21,6 +23,7 @@ def _write_gui_startup_diagnostic(error: ImportError) -> None:
     ]
     lines = [
         "CCodeFormatter GUI startup failed",
+        f"error_type: {type(error).__name__}",
         f"error: {error}",
         f"executable: {sys.executable}",
         f"frozen: {getattr(sys, 'frozen', False)}",
@@ -29,6 +32,8 @@ def _write_gui_startup_diagnostic(error: ImportError) -> None:
         f"qt_dll_directories: {[str(path) for path in candidates if path.is_dir()]}",
         f"qtcore_candidates: {[str(path / 'Qt6Core.dll') for path in candidates if (path / 'Qt6Core.dll').is_file()]}",
         f"path_head: {os.environ.get('PATH', '').split(os.pathsep)[:5]}",
+        "traceback:",
+        "".join(traceback.format_exception(error)),
     ]
     report = "\n".join(lines) + "\n"
     try:
@@ -38,7 +43,13 @@ def _write_gui_startup_diagnostic(error: ImportError) -> None:
             (Path.cwd() / "CCodeFormatter-startup.log").write_text(report, encoding="utf-8")
         except OSError:
             pass
-    print("界面启动失败，详细诊断已写入 CCodeFormatter-startup.log", file=sys.stderr)
+    message = "界面启动失败，详细诊断已写入 CCodeFormatter-startup.log。"
+    print(message, file=sys.stderr)
+    if os.name == "nt":
+        try:
+            ctypes.windll.user32.MessageBoxW(None, message, "CCodeFormatter", 0x10)
+        except Exception:
+            pass
 
 
 def main() -> int:
@@ -51,13 +62,10 @@ def main() -> int:
     if not args.files:
         try:
             from .ui import run_gui
-        except ImportError as error:
-            if "QtCore" in str(error) or "PyQt6" in str(error):
-                _write_gui_startup_diagnostic(error)
-                return 1
-            raise
-
-        return run_gui()
+            return run_gui()
+        except Exception as error:
+            _write_gui_startup_diagnostic(error)
+            return 1
     try:
         if args.check:
             has_issues = False

@@ -28,6 +28,7 @@ if ($OneDir -and $OneFile) {
 }
 $useOneDir = $OneDir
 $mode = if ($useOneDir) { "--onedir" } else { "--onefile" }
+$runtimeTempArgs = if ($useOneDir) { @() } else { @("--runtime-tmpdir", "%LOCALAPPDATA%\\Temp") }
 $assetData = "$(Join-Path $projectRoot 'assets');assets"
 $iconPath = Join-Path $projectRoot "assets\icons\app-icon.ico"
 $runtimeHook = Join-Path $projectRoot "scripts\pyinstaller_runtime_hook.py"
@@ -49,8 +50,12 @@ try {
         --clean `
         --windowed `
         $mode `
+        @runtimeTempArgs `
         --name CCodeFormatter `
         --paths (Join-Path $projectRoot "src") `
+        --collect-all PyQt6 `
+        --collect-all numpy `
+        --collect-all pyglass `
         --add-data $assetData `
         --add-binary "$icuPath;." `
         --runtime-hook $runtimeHook `

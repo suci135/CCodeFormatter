@@ -76,6 +76,12 @@ scripts\build_exe.bat
 dist\CCodeFormatter.exe
 ```
 
+### 发给其他人使用
+
+运行 `scripts\build_exe.bat` 后，只需发送 `dist\CCodeFormatter.exe` 这一个文件；接收方不需要安装 Python、PyQt 或复制虚拟环境。该发布包面向 64 位 Windows 10/11，首次启动会在当前用户的 `%LOCALAPPDATA%\Temp` 下创建并自动清理临时解压目录，通常需要几秒钟。
+
+若目标电脑仍无法启动，程序会在 EXE 同目录（不可写时为当前目录）生成 `CCodeFormatter-startup.log`，请把该文件一并发回用于定位。
+
 ## 发布到 GitHub
 
 仓库已配置 `origin`。双击以下文件后，输入提交说明、检查待发布文件并确认即可上传：
